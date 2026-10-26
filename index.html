@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CRM 客戶關係管理系統 - Kaspersky Taiwan</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800 font-sans">
+  <div id="app" class="p-4 md:p-6 max-w-7xl mx-auto">
+    <!-- Login Screen -->
+    <div v-if="!isLoggedIn" class="min-h-[80vh] flex items-center justify-center">
+      <div class="bg-white rounded-2xl shadow-xl max-w-md w-full p-8 border border-slate-200">
+        <div class="text-center mb-6">
+          <i class="fa-solid fa-shield-halved text-4xl text-blue-600 mb-2"></i>
+          <h2 class="text-2xl font-bold text-slate-800">Kaspersky CRM 系統登入</h2>
+          <p class="text-xs text-slate-500 mt-1">請輸入您的帳號與密碼進行身分驗證</p>
+        </div>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">帳號 / Email</label>
+            <input v-model="loginForm.email" type="text" placeholder="例如: catherine.lee@kaspersky-tw.com" class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 mb-1">密碼</label>
+            <input v-model="loginForm.password" type="password" placeholder="請輸入密碼..." class="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" @keyup.enter="handleLogin">
+          </div>
+
+          <div v-if="loginError" class="bg-red-50 text-red-600 text-xs p-3 rounded-lg border border-red-200">
+            <i class="fa-solid fa-circle-exclamation mr-1"></i> {{ loginError }}
+          </div>
+
+          <button @click="handleLogin" :disabled="authLoading" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-lg text-sm transition shadow-md flex items-center justify-center gap-2 disabled:opacity-50">
+            <i class="fa-solid fa-right-to-bracket" :class="{'fa-spin': authLoading}"></i> 登入系統
+          </button>
+
+          <div class="pt-4 border-t border-slate-100 flex justify-between items-center text-xs">
+            <span class="text-slate-400">尚未設定後台網址？</span>
+            <button @click="showApiConfig = true" class="text-blue-600 hover:underline font-medium">⚙️ 設定後台網址</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main CRM App (When Logged In) -->
+    <div v-else>
+      <!-- Header -->
+      <header class="bg-white rounded-xl shadow-md p-5 mb-6 border-l-4 border-blue-600 flex flex-wrap justify-between items-center gap-4">
+        <div>
+          <h1 class="text-2xl font-bold text-slate-800 flex items-center gap-2">
+            <i class="fa-solid fa-address-book text-blue-600"></i> CRM 客戶關係管理系統
+          </h1>
+          <p class="text-sm text-slate-500 mt-1">目前登入：{{ currentUser }} | 身份：<span :class="roleBadgeClass" class="px-2 py-0.5 rounded font-bold text-xs">{{ currentRoleName }}</span></p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <button @click="openUserMgmtModal" v-if="isAdmin" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1 shadow">
+            <i class="fa-solid fa-users-gear"></i> 權限審核管理
+          </button>
+          <button @click="showApiConfig = true" class="bg-slate-700 hover:bg-slate-800 text-white px-3 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1 shadow">
+            <i class="fa-solid fa-gears"></i> 設定後台網址
+          </button>
+          <button @click="handleLogout" class="bg-slate-200 hover:bg-slate-300 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1">
+            <i class="fa-solid fa-right-from-bracket"></i> 登出
+          </button>
+        </div>
+      </header>
+
+      <!-- Alert / Permission Denied -->
+      <div v-if="currentRole === 'DISABLED'" class="bg-red-100 border border-red-400 text-red-700 px-6 py-12 rounded-xl text-center shadow mb-6">
+        <i class="fa-solid fa-ban text-5xl mb-3 text-red-500"></i>
+        <h2 class="text-2xl font-bold">無權限存取系統</h2>
+        <p class="mt-2 text-sm">您的帳號目前設定為「無權限」，請聯繫最高管理者開通。</p>
+      </div>
+
+      <!-- Main Content -->
+      <div v-else>
+        <!-- Action Bar -->
+        <div class="bg-white rounded-xl shadow-sm p-4 mb-6 border border-slate-200 flex flex-wrap justify-between items-center gap-4">
+          <div class="flex flex-wrap items-center gap-3">
+            <button @click="fetchFromSheets" :disabled="loading" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 shadow disabled:opacity-50">
+              <i class="fa-solid fa-arrows-rotate" :class="{'fa-spin': loading}"></i> 從 Google Sheets 載入
+            </button>
+
+            <!-- Excel 匯入 (需編輯權限) -->
+            <label v-if="canEdit" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 shadow cursor-pointer">
+              <i class="fa-solid fa-file-import"></i> 📥 匯入 Excel
+              <input type="file" accept=".xlsx, .xls" @change="handleExcelImport" class="hidden">
+            </label>
+
+            <button v-if="canEdit" @click="openAddModal" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 shadow">
+              <i class="fa-solid fa-plus"></i> 新增客戶
+            </button>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3">
+            <button @click="exportToExcel" class="bg-slate-600 hover:bg-slate-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1 shadow">
+              <i class="fa-solid fa-file-excel"></i> 匯出 Excel
+            </button>
+          </div>
+        </div>
+
+        <!-- Search & Filters -->
+        <div class="bg-white rounded-xl shadow-sm p-4 mb-6 border border-slate-200 grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">搜尋公司/股票代號</label>
+            <input v-model="filters.keyword" type="text" placeholder="輸入關鍵字..." class="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">依 Sales 篩選</label>
+            <select v-model="filters.sales" class="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+              <option value="">全部 Sales</option>
+              <option v-for="s in salesOptions" :key="s" :value="s">{{ s }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">依大類篩選</label>
+            <select v-model="filters.category" class="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+              <option value="">全部大類</option>
+              <option v-for="c in categoryOptions" :key="c" :value="c">{{ c }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-500 mb-1">依最新聯繫狀況篩選</label>
+            <select v-model="filters.status" class="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+              <option value="">全部狀態</option>
+              <option v-for="st in statusList" :key="st" :value="st">{{ st }}</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Data Table -->
+        <div class="bg-white rounded-xl shadow border border-slate-200 overflow-hidden mb-6">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr class="bg-slate-800 text-slate-100 font-semibold text-xs uppercase tracking-wider">
+                  <th class="p-3">Sales</th>
+                  <th class="p-3">排名</th>
+                  <th class="p-3">股票代號</th>
+                  <th class="p-3">公司名稱</th>
+                  <th class="p-3">大類</th>
+                  <th class="p-3">產業類別</th>
+                  <th class="p-3 text-center">最新聯繫狀況</th>
+                  <th class="p-3">最新聯絡日期</th>
+                  <th class="p-3">聯繫內容摘要</th>
+                  <th class="p-3 text-center">操作/歷史紀錄</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-200">
+                <tr v-if="filteredList.length === 0">
+                  <td colspan="10" class="p-8 text-center text-slate-400">目前無符合條件的客戶資料 (可點擊「從 Google Sheets 載入」或「匯入 Excel」)</td>
+                </tr>
+                <tr v-for="item in filteredList" :key="item.ID" class="hover:bg-slate-50 transition">
+                  <td class="p-3 font-medium text-slate-700">{{ item.Sales || '-' }}</td>
+                  <td class="p-3 text-slate-500">{{ item['排名'] || '-' }}</td>
+                  <td class="p-3 font-mono text-slate-600">{{ item['股票代號'] || '-' }}</td>
+                  <td class="p-3 font-semibold text-slate-800">{{ item['公司名稱'] }}</td>
+                  <td class="p-3"><span class="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs border border-slate-200">{{ item['大類'] || '未分類' }}</span></td>
+                  <td class="p-3 text-slate-500 text-xs">{{ item['產業類別'] || '-' }}</td>
+                  <td class="p-3 text-center">
+                    <select v-model="item['最新聯繫狀況']" :disabled="!canEdit" @change="onStatusChange(item)" :class="getStatusBadgeClass(item['最新聯繫狀況'])" class="text-xs px-2.5 py-1 rounded-full font-bold border focus:outline-none cursor-pointer disabled:cursor-not-allowed">
+                      <option v-for="st in statusList" :key="st" :value="st">{{ st }}</option>
+                    </select>
+                  </td>
+                  <td class="p-3 text-xs text-slate-600">{{ item['最新聯絡日期'] || '-' }}</td>
+                  <td class="p-3 text-xs text-slate-600 max-w-xs truncate" :title="item['聯繫內容摘要']">{{ item['聯繫內容摘要'] || '-' }}</td>
+                  <td class="p-3 text-center">
+                    <div class="flex items-center justify-center gap-2">
+                      <button @click="openHistoryModal(item)" class="bg-blue-50 text-blue-600 hover:bg-blue-100 px-2.5 py-1 rounded text-xs font-semibold transition border border-blue-200">
+                        📜 紀錄 ({{ (item['歷史紀錄'] || []).length }})
+                      </button>
+                      <button v-if="canEdit" @click="confirmDelete(item)" class="text-red-500 hover:text-red-700 p-1 rounded transition" title="刪除客戶">
+                        <i class="fa-solid fa-trash-can"></i>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Customer Modal -->
+    <div v-if="showAddModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6">
+        <div class="flex justify-between items-center mb-4 border-b pb-3">
+          <h3 class="text-lg font-bold text-slate-800">➕ 新增客戶資料</h3>
+          <button @click="showAddModal = false" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-xl"></i></button>
+        </div>
+        <div class="space-y-3 text-xs">
+          <div>
+            <label class="block font-semibold text-slate-600 mb-1">Sales</label>
+            <input v-model="newCustomer.Sales" type="text" placeholder="負責業務..." class="w-full border rounded p-2">
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">股票代號</label>
+              <input v-model="newCustomer['股票代號']" type="text" placeholder="例如 2330" class="w-full border rounded p-2">
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">公司名稱 *</label>
+              <input v-model="newCustomer['公司名稱']" type="text" placeholder="公司全稱..." class="w-full border rounded p-2">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">大類</label>
+              <input v-model="newCustomer['大類']" type="text" placeholder="產業大類..." class="w-full border rounded p-2">
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">產業類別</label>
+              <input v-model="newCustomer['產業類別']" type="text" placeholder="次產業..." class="w-full border rounded p-2">
+            </div>
+          </div>
+          <div>
+            <label class="block font-semibold text-slate-600 mb-1">備註</label>
+            <input v-model="newCustomer['備註']" type="text" placeholder="備註說明..." class="w-full border rounded p-2">
+          </div>
+        </div>
+        <div class="mt-6 flex justify-end gap-2">
+          <button @click="showAddModal = false" class="bg-slate-200 text-slate-700 px-4 py-2 rounded text-xs">取消</button>
+          <button @click="saveNewCustomer" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded text-xs font-semibold shadow">確認新增</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- User Management Modal -->
+    <div v-if="showUserMgmtModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-2xl max-w-3xl w-full p-6">
+        <div class="flex justify-between items-center mb-4 border-b pb-3">
+          <h3 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+            <i class="fa-solid fa-users-gear text-purple-600"></i> 使用者權限審核與管控面板
+          </h3>
+          <button @click="showUserMgmtModal = false" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-xl"></i></button>
+        </div>
+        <div class="mb-3 flex justify-between items-center">
+          <p class="text-xs bg-purple-50 text-purple-800 p-3 rounded border border-purple-200 flex-1 flex justify-between items-center">
+            <span><i class="fa-solid fa-shield-halved"></i> 您是最高管理者 (ADMIN)，可編輯帳號密碼與權限等級，並新增或儲存同步至後台。</span>
+            <button @click="addNewUserRow" class="bg-purple-600 hover:bg-purple-700 text-white px-2.5 py-1 rounded text-xs shadow ml-2">
+              <i class="fa-solid fa-plus"></i> 新增帳號
+            </button>
+          </p>
+        </div>
+        <div class="space-y-4 max-h-96 overflow-y-auto">
+          <table class="w-full text-left text-sm">
+            <thead>
+              <tr class="bg-slate-100 text-xs text-slate-600 uppercase">
+                <th class="p-2">帳號 / Email</th>
+                <th class="p-2">密碼</th>
+                <th class="p-2">權限等級</th>
+                <th class="p-2">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(u, idx) in userList" :key="idx" class="border-b">
+                <td class="p-2 font-medium">
+                  <input v-model="u.email" type="text" placeholder="請輸入 Email..." class="w-full border border-slate-300 rounded p-1 text-xs">
+                </td>
+                <td class="p-2">
+                  <input v-model="u.password" type="text" placeholder="設定密碼..." class="w-full border border-slate-300 rounded p-1 text-xs">
+                </td>
+                <td class="p-2">
+                  <select v-model="u.role" class="border border-slate-300 rounded p-1 text-xs">
+                    <option value="ADMIN">最高管理者 (Admin)</option>
+                    <option value="EDITOR">可編輯 (Editor)</option>
+                    <option value="VIEWER">僅檢視 (Viewer)</option>
+                    <option value="DISABLED">無權限 (Disabled)</option>
+                  </select>
+                </td>
+                <td class="p-2 flex gap-1">
+                  <button @click="saveUserRole(u)" class="bg-purple-600 hover:bg-purple-700 text-white px-2.5 py-1 rounded text-xs shadow">
+                    儲存
+                  </button>
+                  <button @click="removeUserRow(idx)" class="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded text-xs shadow" title="刪除">
+                    <i class="fa-solid fa-trash"></i>
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="mt-6 flex justify-end">
+          <button @click="showUserMgmtModal = false" class="bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm">關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- History / Coach's Tip Modal -->
+    <div v-if="showHistoryModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-2xl max-w-3xl w-full p-6 max-h-[90vh] flex flex-col">
+        <div class="flex justify-between items-center pb-3 border-b">
+          <div>
+            <h3 class="text-lg font-bold text-slate-800">{{ currentItem['公司名稱'] }} - 聯繫紀錄與 Coach's Tip</h3>
+            <p class="text-xs text-slate-500">Sales: {{ currentItem.Sales }} | 代號: {{ currentItem['股票代號'] }}</p>
+          </div>
+          <button @click="showHistoryModal = false" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-xl"></i></button>
+        </div>
+
+        <div v-if="canEdit" class="bg-slate-50 p-4 rounded-lg my-4 border border-slate-200">
+          <h4 class="text-xs font-bold text-slate-700 uppercase mb-2">新增互動紀錄</h4>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+            <div>
+              <label class="block text-xs text-slate-500">聯絡日期</label>
+              <input v-model="newLog.date" type="date" class="w-full border rounded p-1.5 text-xs">
+            </div>
+            <div>
+              <label class="block text-xs text-slate-500">聯繫狀況</label>
+              <select v-model="newLog.status" class="w-full border rounded p-1.5 text-xs">
+                <option v-for="st in statusList" :key="st" :value="st">{{ st }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-slate-500">記錄者</label>
+              <input v-model="newLog.author" type="text" readonly class="w-full border rounded p-1.5 text-xs bg-slate-100">
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="block text-xs text-slate-500">聯繫內容摘要</label>
+            <textarea v-model="newLog.summary" rows="2" placeholder="請輸入聯絡內容要點..." class="w-full border rounded p-1.5 text-xs"></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="block text-xs font-bold text-amber-700">💡 Coach's Tip (教練指導摘要)</label>
+            <textarea v-model="newLog.coachTip" rows="2" placeholder="教練建議、方針與指導筆記..." class="w-full border border-amber-300 rounded p-1.5 text-xs bg-amber-50/50"></textarea>
+          </div>
+          <button @click="addHistoryLog" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded text-xs font-semibold shadow">
+            新增此筆紀錄並同步
+          </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto space-y-3 pr-2">
+          <div v-if="!currentItem['歷史紀錄'] || currentItem['歷史紀錄'].length === 0" class="text-center py-8 text-slate-400 text-sm">
+            尚無任何歷史聯繫紀錄
+          </div>
+          <div v-for="(log, idx) in currentItem['歷史紀錄']" :key="idx" class="border-l-2 border-blue-500 pl-4 py-2 relative bg-slate-50 rounded-r-lg p-3">
+            <div class="flex justify-between items-center text-xs text-slate-500 mb-1">
+              <span class="font-bold text-slate-700">{{ log.date }} | {{ log.status }}</span>
+              <span>記錄者: {{ log.author }}</span>
+            </div>
+            <p class="text-xs text-slate-800 mb-2">{{ log.summary }}</p>
+            <div v-if="log.coachTip" class="bg-amber-100/70 border-l-2 border-amber-500 p-2 text-xs text-amber-900 rounded-r">
+              <strong>💡 Coach's Tip:</strong> {{ log.coachTip }}
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-3 border-t flex justify-end">
+          <button @click="showHistoryModal = false" class="bg-slate-200 text-slate-700 px-4 py-1.5 rounded text-xs font-semibold">關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Config Modal -->
+    <div v-if="showApiConfig" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+        <h3 class="text-lg font-bold text-slate-800 mb-2">⚙️ 設定 Google Apps Script 後端 URL</h3>
+        <p class="text-xs text-slate-500 mb-4">請將部署完成的 Apps Script Web App URL 貼入下方：</p>
+        <input v-model="apiUrl" type="text" placeholder="https://script.google.com/macros/s/.../exec" class="w-full border border-slate-300 rounded-lg p-2 text-xs mb-4">
+        <div class="flex justify-end gap-2">
+          <button @click="showApiConfig = false" class="bg-slate-200 text-slate-700 px-3 py-1.5 rounded text-xs">取消</button>
+          <button @click="saveApiUrl" class="bg-blue-600 text-white px-4 py-1.5 rounded text-xs font-semibold">儲存連線</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted } = Vue;
+
+    createApp({
+      setup() {
+        const apiUrl = ref(localStorage.getItem('crm_api_url') || '');
+        const showApiConfig = ref(false);
+        const showUserMgmtModal = ref(false);
+        const showHistoryModal = ref(false);
+        const showAddModal = ref(false);
+        const loading = ref(false);
+        const authLoading = ref(false);
+        const loginError = ref('');
+
+        const isLoggedIn = ref(localStorage.getItem('is_logged_in') === 'true');
+        const currentUser = ref(localStorage.getItem('logged_in_user') || '');
+        const loginForm = ref({ email: 'catherine.lee@kaspersky-tw.com', password: 'admin123' });
+
+        const userList = ref([
+          { email: 'catherine.lee@kaspersky-tw.com', password: 'admin123', role: 'ADMIN' },
+          { email: 'sales.tiffany@company.com', password: '123', role: 'EDITOR' },
+          { email: 'coach.david@company.com', password: '123', role: 'EDITOR' },
+          { email: 'viewer.user@company.com', password: '123', role: 'VIEWER' }
+        ]);
+
+        const customerList = ref([]);
+        const currentItem = ref({});
+        const newCustomer = ref({ Sales: '', '股票代號': '', '公司名稱': '', '大類': '', '產業類別': '', '備註': '' });
+        const newLog = ref({ date: new Date().toISOString().split('T')[0], status: '已寄信', summary: '', coachTip: '', author: currentUser.value });
+
+        const filters = ref({ keyword: '', sales: '', category: '', status: '' });
+        const statusList = ['未聯繫', '已寄信', '已電話聯繫', '已安排會議', '洽談中', '待回覆', '已成交', '暫緩', '無需求', '其它'];
+
+        const fetchUsers = async () => {
+          if (!apiUrl.value) return;
+          try {
+            const res = await fetch(apiUrl.value + '?action=GET_USERS');
+            const data = await res.json();
+            if (Array.isArray(data) && data.length > 0) {
+              userList.value = data.map(u => ({ email: u.email, password: u.password || '123', role: u.role }));
+            }
+          } catch (e) {
+            console.error('無法載入使用者權限清單', e);
+          }
+        };
+
+        const handleLogin = async () => {
+          loginError.value = '';
+          if (!loginForm.value.email || !loginForm.value.password) {
+            loginError.value = '請輸入帳號與密碼';
+            return;
+          }
+          authLoading.value = true;
+          if (apiUrl.value) {
+            await fetchUsers();
+          }
+
+          const matched = userList.value.find(u => 
+            u.email.toLowerCase() === loginForm.value.email.trim().toLowerCase() && 
+            u.password === loginForm.value.password
+          );
+
+          if (matched) {
+            if (matched.role === 'DISABLED') {
+              loginError.value = '此帳號已被停用無權限存取';
+            } else {
+              currentUser.value = matched.email;
+              isLoggedIn.value = true;
+              localStorage.setItem('is_logged_in', 'true');
+              localStorage.setItem('logged_in_user', matched.email);
+              if (apiUrl.value) fetchFromSheets();
+            }
+          } else {
+            loginError.value = '帳號或密碼錯誤，或無此授權帳號';
+          }
+          authLoading.value = false;
+        };
+
+        const handleLogout = () => {
+          isLoggedIn.value = false;
+          currentUser.value = '';
+          localStorage.removeItem('is_logged_in');
+          localStorage.removeItem('logged_in_user');
+        };
+
+        const currentRole = computed(() => {
+          const matched = userList.value.find(x => x.email.toLowerCase() === currentUser.value.toLowerCase());
+          return matched ? matched.role : 'DISABLED';
+        });
+
+        const isAdmin = computed(() => currentRole.value === 'ADMIN');
+        const canEdit = computed(() => ['ADMIN', 'EDITOR'].includes(currentRole.value));
+
+        const currentRoleName = computed(() => {
+          const map = { ADMIN: '最高管理者', EDITOR: '可編輯', VIEWER: '僅檢視', DISABLED: '無權限' };
+          return map[currentRole.value] || '無權限';
+        });
+
+        const roleBadgeClass = computed(() => {
+          const map = { ADMIN: 'bg-purple-100 text-purple-700', EDITOR: 'bg-emerald-100 text-emerald-700', VIEWER: 'bg-blue-100 text-blue-700', DISABLED: 'bg-red-100 text-red-700' };
+          return map[currentRole.value] || 'bg-red-100 text-red-700';
+        });
+
+        const salesOptions = computed(() => [...new Set(customerList.value.map(x => x.Sales).filter(Boolean))]);
+        const categoryOptions = computed(() => [...new Set(customerList.value.map(x => x['大類']).filter(Boolean))]);
+
+        const filteredList = computed(() => {
+          return customerList.value.filter(item => {
+            const matchKw = !filters.value.keyword || (item['公司名稱'] || '').includes(filters.value.keyword) || (item['股票代號'] || '').toString().includes(filters.value.keyword);
+            const matchSales = !filters.value.sales || item.Sales === filters.value.sales;
+            const matchCat = !filters.value.category || item['大類'] === filters.value.category;
+            const matchStatus = !filters.value.status || item['最新聯繫狀況'] === filters.value.status;
+            return matchKw && matchSales && matchCat && matchStatus;
+          });
+        });
+
+        const fetchFromSheets = async () => {
+          if (!apiUrl.value) return;
+          loading.value = true;
+          try {
+            const res = await fetch(apiUrl.value);
+            const data = await res.json();
+            if (Array.isArray(data)) {
+              customerList.value = data;
+            }
+          } catch (e) {
+            console.error('載入資料失敗', e);
+          } finally {
+            loading.value = false;
+          }
+        };
+
+        const openAddModal = () => {
+          newCustomer.value = { Sales: '', '股票代號': '', '公司名稱': '', '大類': '', '產業類別': '', '備註': '' };
+          showAddModal.value = true;
+        };
+
+        const saveNewCustomer = async () => {
+          if (!newCustomer.value['公司名稱']) {
+            alert('請輸入公司名稱');
+            return;
+          }
+          const item = {
+            ID: 'CUST_' + Date.now(),
+            Sales: newCustomer.value.Sales || currentUser.value,
+            '排名': '',
+            '股票代號': newCustomer.value['股票代號'] || '',
+            '公司名稱': newCustomer.value['公司名稱'],
+            '大類': newCustomer.value['大類'] || '',
+            '產業類別': newCustomer.value['產業類別'] || '',
+            '最新聯繫狀況': '未聯繫',
+            '最新聯絡日期': '',
+            '聯繫內容摘要': '',
+            '歷史紀錄': [],
+            '備註': newCustomer.value['備註'] || '',
+            '匯入時間': new Date().toLocaleString()
+          };
+
+          customerList.value.unshift(item);
+          showAddModal.value = false;
+
+          if (apiUrl.value) {
+            try {
+              await fetch(apiUrl.value, {
+                method: 'POST',
+                body: JSON.stringify({
+                  action: 'ADD',
+                  operator: currentUser.value,
+                  data: item
+                })
+              });
+            } catch (e) {
+              console.error('同步至後台失敗', e);
+            }
+          }
+        };
+
+        const openUserMgmtModal = () => {
+          fetchUsers();
+          showUserMgmtModal.value = true;
+        };
+
+        const addNewUserRow = () => {
+          userList.value.push({ email: '', password: '123', role: 'VIEWER' });
+        };
+
+        const removeUserRow = (idx) => {
+          userList.value.splice(idx, 1);
+        };
+
+        const saveUserRole = async (u) => {
+          if (!isAdmin.value) {
+            alert('權限不足');
+            return;
+          }
+          if (!u.email || !u.email.includes('@')) {
+            alert('請輸入有效的 Email');
+            return;
+          }
+          if (!apiUrl.value) {
+            alert('請先設定後台網址');
+            showApiConfig.value = true;
+            return;
+          }
+          try {
+            const res = await fetch(apiUrl.value, {
+              method: 'POST',
+              body: JSON.stringify({
+                action: 'UPDATE_PERMISSION',
+                operator: currentUser.value,
+                targetEmail: u.email,
+                targetPass: u.password || '123',
+                newRole: u.role
+              })
+            });
+            const result = await res.json();
+            if (result.status === 'success') {
+              alert(`已成功儲存帳號 ${u.email}`);
+              fetchUsers();
+            } else {
+              alert('儲存失敗: ' + (result.message || '未知錯誤'));
+            }
+          } catch (err) {
+            alert('連線至後台失敗');
+          }
+        };
+
+        const handleExcelImport = (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = async (evt) => {
+            const data = new Uint8Array(evt.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const sheetName = workbook.SheetNames[0];
+            const json = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+            const now = new Date().toLocaleString();
+
+            const imported = json.map((row, idx) => ({
+              ID: 'IMP_' + Date.now() + '_' + idx,
+              Sales: row['Sales'] || '',
+              '排名': row['排名'] || '',
+              '股票代號': row['股票代號'] || '',
+              '公司名稱': row['公司名稱'] || '',
+              '大類': row['大類'] || '',
+              '產業類別': row['產業類別'] || '',
+              '最新聯繫狀況': '未聯繫',
+              '最新聯絡日期': '',
+              '聯繫內容摘要': '',
+              '歷史紀錄': [],
+              '備註': row['Note'] || '',
+              '匯入時間': now
+            }));
+
+            customerList.value = [...customerList.value, ...imported];
+
+            if (apiUrl.value) {
+              try {
+                await fetch(apiUrl.value, {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    action: 'BATCH_IMPORT',
+                    operator: currentUser.value,
+                    dataList: imported
+                  })
+                });
+                alert(`成功匯入 ${imported.length} 筆資料並同步至後台！`);
+              } catch (err) {
+                alert(`前端匯入成功，但同步後台發生錯誤`);
+              }
+            } else {
+              alert(`成功匯入 ${imported.length} 筆資料！`);
+            }
+          };
+          reader.readAsArrayBuffer(file);
+        };
+
+        const onStatusChange = async (item) => {
+          item['最新聯絡日期'] = new Date().toISOString().split('T')[0];
+          if (apiUrl.value) {
+            try {
+              await fetch(apiUrl.value, {
+                method: 'POST',
+                body: JSON.stringify({
+                  action: 'UPDATE',
+                  operator: currentUser.value,
+                  data: item
+                })
+              });
+            } catch (err) {
+              console.error('狀態同步失敗', err);
+            }
+          }
+        };
+
+        const openHistoryModal = (item) => {
+          currentItem.value = item;
+          newLog.value.author = currentUser.value;
+          showHistoryModal.value = true;
+        };
+
+        const addHistoryLog = async () => {
+          if (!currentItem.value['歷史紀錄']) currentItem.value['歷史紀錄'] = [];
+          currentItem.value['歷史紀錄'].unshift({ ...newLog.value });
+          currentItem.value['最新聯繫狀況'] = newLog.value.status;
+          currentItem.value['最新聯絡日期'] = newLog.value.date;
+          currentItem.value['聯繫內容摘要'] = newLog.value.summary;
+
+          if (apiUrl.value) {
+            try {
+              await fetch(apiUrl.value, {
+                method: 'POST',
+                body: JSON.stringify({
+                  action: 'UPDATE',
+                  operator: currentUser.value,
+                  data: currentItem.value
+                })
+              });
+              alert('歷史紀錄與 Coach\'s Tip 已同步至後台！');
+            } catch (err) {
+              alert('同步失敗');
+            }
+          }
+          newLog.value.summary = '';
+          newLog.value.coachTip = '';
+        };
+
+        const confirmDelete = async (item) => {
+          if (!confirm(`確定要刪除客戶「${item['公司名稱']}」嗎？`)) return;
+          customerList.value = customerList.value.filter(x => x.ID !== item.ID);
+          if (apiUrl.value) {
+            try {
+              await fetch(apiUrl.value, {
+                method: 'POST',
+                body: JSON.stringify({
+                  action: 'DELETE',
+                  deletedBy: currentUser.value,
+                  id: item.ID
+                })
+              });
+            } catch (err) {
+              console.error('刪除同步失敗', err);
+            }
+          }
+        };
+
+        const exportToExcel = () => {
+          const ws = XLSX.utils.json_to_sheet(customerList.value);
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, "CRM資料");
+          XLSX.writeFile(wb, "CRM_Export_" + new Date().toISOString().split('T')[0] + ".xlsx");
+        };
+
+        const getStatusBadgeClass = (status) => {
+          const map = { '已成交': 'bg-emerald-100 text-emerald-800 border-emerald-300', '洽談中': 'bg-amber-100 text-amber-800 border-amber-300', '已安排會議': 'bg-blue-100 text-blue-800 border-blue-300' };
+          return map[status] || 'bg-slate-100 text-slate-700 border-slate-300';
+        };
+
+        const saveApiUrl = () => {
+          localStorage.setItem('crm_api_url', apiUrl.value);
+          showApiConfig.value = false;
+          fetchUsers();
+          if (isLoggedIn.value) fetchFromSheets();
+        };
+
+        onMounted(() => {
+          if (apiUrl.value) {
+            fetchUsers();
+            if (isLoggedIn.value) fetchFromSheets();
+          }
+        });
+
+        return {
+          apiUrl, showApiConfig, showUserMgmtModal, showHistoryModal, showAddModal, loading, authLoading, loginError,
+          isLoggedIn, currentUser, loginForm, userList, customerList, currentItem, newCustomer, newLog, filters, statusList,
+          isAdmin, canEdit, currentRole, currentRoleName, roleBadgeClass,
+          salesOptions, categoryOptions, filteredList, handleLogin, handleLogout, handleExcelImport,
+          openAddModal, saveNewCustomer, openHistoryModal, addHistoryLog, confirmDelete, exportToExcel, getStatusBadgeClass,
+          saveApiUrl, openUserMgmtModal, saveUserRole, onStatusChange, addNewUserRow, removeUserRow
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
